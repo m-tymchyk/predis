@@ -269,26 +269,26 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
         $retries = 0;
 
         RETRY_CONNECTION: {
-        try {
-            $result = $closure($connection);
-        } catch (ConnectionException $exception) {
-            $connection = $exception->getConnection();
-            $connection->disconnect();
+            try {
+                $result = $closure($connection);
+            } catch (ConnectionException $exception) {
+                $connection = $exception->getConnection();
+                $connection->disconnect();
 
-            $this->remove($connection);
+                $this->remove($connection);
 
-            if ($retries === $retryLimit) {
-                throw $exception;
+                if ($retries === $retryLimit) {
+                    throw $exception;
+                }
+
+                if (!$connection = $this->getRandomConnection()) {
+                    throw new ClientException('No connections left in the pool for retry');
+                }
+
+                ++$retries;
+                goto RETRY_CONNECTION;
             }
-
-            if (!$connection = $this->getRandomConnection()) {
-                throw new ClientException('No connections left in the pool for retry');
-            }
-
-            ++$retries;
-            goto RETRY_CONNECTION;
         }
-    }
 
         return $result;
     }
@@ -462,24 +462,32 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
      * Handles -ERR responses returned by Redis.
      *
      * @param CommandInterface $command Command that generated the -ERR response.
-     * @param ErrorResponseInterface $error Redis error response object.
+     * @param ErrorResponseInterface $error  Redis error response object.
+     * @param ErrorResponseInterface $error  Redis error response object.
+     * @param string                 $method
      *
      * @return mixed
      */
-    protected function onErrorResponse(CommandInterface $command, ErrorResponseInterface $error)
+    protected function onErrorResponse(CommandInterface $command, ErrorResponseInterface $error, $method)
     {
         $details = explode(' ', $error->getMessage(), 2);
 
         switch ($details[0]) {
             case 'MOVED':
-                return $this->onMovedResponse($command, $details[1]);
+                $this->onMovedResponse($command, $details[1]);
+                break;
 
             case 'ASK':
-                return $this->onAskResponse($command, $details[1]);
+                $this->onAskResponse($command, $details[1]);
+                break;
 
             default:
                 return $error;
         }
+
+        $response = $this->$method($command);
+
+        return $response;
     }
 
     /**
@@ -488,8 +496,6 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
      *
      * @param CommandInterface $command Command that generated the -MOVED response.
      * @param string $details Parameters of the -MOVED response.
-     *
-     * @return mixed
      */
     protected function onMovedResponse(CommandInterface $command, $details)
     {
@@ -504,9 +510,6 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
         }
 
         $this->move($connection, $slot);
-        $response = $this->executeCommand($command);
-
-        return $response;
     }
 
     /**
@@ -515,8 +518,6 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
      *
      * @param CommandInterface $command Command that generated the -ASK response.
      * @param string $details Parameters of the -ASK response.
-     *
-     * @return mixed
      */
     protected function onAskResponse(CommandInterface $command, $details)
     {
@@ -527,9 +528,6 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
         }
 
         $connection->executeCommand(RawCommand::create('ASKING'));
-        $response = $connection->executeCommand($command);
-
-        return $response;
     }
 
     /**
@@ -555,48 +553,48 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
         $startTime = null;
 
         RETRY_COMMAND: {
-        try {
-            $response = $this->getConnectionByCommand($command)->$method($command);
-        } catch (ConnectionException $exception) {
-            $connection = $exception->getConnection();
-            $connection->disconnect();
+            try {
+                $response = $this->getConnectionByCommand($command)->$method($command);
+            } catch (ConnectionException $exception) {
+                $connection = $exception->getConnection();
+                $connection->disconnect();
 
-            $this->remove($connection);
+                $this->remove($connection);
 
-            if ($this->commandRetryTimeout == 0) {
-                if ($failure) {
-                    throw $exception;
-                } elseif ($this->useClusterSlots) {
-                    $this->askSlotMap();
-                }
-                $failure = true;
-            } else {
-                if ($this->commandRetryTimeout > 0) {
-                    if ($startTime === null) {
-                        $startTime = microtime(true);
-                    } else {
-                        $secondsPassed = microtime(true) - $startTime;
-                        if($secondsPassed > $this->commandRetryTimeout) {
-                            throw new ConnectionException($exception->getConnection(), "Retry timeout! " . $exception->getMessage(), $exception->getCode(), $exception);
+                if ($this->commandRetryTimeout == 0) {
+                    if ($failure) {
+                        throw $exception;
+                    } elseif ($this->useClusterSlots) {
+                        $this->askSlotMap();
+                    }
+                    $failure = true;
+                } else {
+                    if ($this->commandRetryTimeout > 0) {
+                        if ($startTime === null) {
+                            $startTime = microtime(true);
+                        } else {
+                            $secondsPassed = microtime(true) - $startTime;
+                            if($secondsPassed > $this->commandRetryTimeout) {
+                                throw new ConnectionException($exception->getConnection(), "Retry timeout! " . $exception->getMessage(), $exception->getCode(), $exception);
+                            }
                         }
                     }
-                }
 
-                if($this->commandRetryDelay > 0) usleep($this->commandRetryDelay);
+                    if($this->commandRetryDelay > 0) usleep($this->commandRetryDelay);
 
-                if($this->useClusterSlots) {
-                    if($previousSlotMap && $previousSlotMap != $this->slotmap->toArray()) {
-                        //slot maps changed but node still not accessible
-                        throw new $exception;
+                    if($this->useClusterSlots) {
+                        if($previousSlotMap && $previousSlotMap != $this->slotmap->toArray()) {
+                            //slot maps changed but node still not accessible
+                            throw new $exception;
+                        }
+                        $previousSlotMap = $this->slotmap->toArray();
+                        $this->askSlotMap();
                     }
-                    $previousSlotMap = $this->slotmap->toArray();
-                    $this->askSlotMap();
                 }
-            }
 
-            goto RETRY_COMMAND;
+                goto RETRY_COMMAND;
+            }
         }
-    }
 
         return $response;
     }
@@ -614,7 +612,13 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
      */
     public function readResponse(CommandInterface $command)
     {
-        return $this->retryCommandOnFailure($command, __FUNCTION__);
+        $response = $this->retryCommandOnFailure($command, __FUNCTION__);
+
+        if ($response instanceof ErrorResponseInterface) {
+            return $this->onErrorResponse($command, $response, __FUNCTION__);
+        }
+
+        return $response;
     }
 
     /**
@@ -625,7 +629,7 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
         $response = $this->retryCommandOnFailure($command, __FUNCTION__);
 
         if ($response instanceof ErrorResponseInterface) {
-            return $this->onErrorResponse($command, $response);
+            return $this->onErrorResponse($command, $response, __FUNCTION__);
         }
 
         return $response;
