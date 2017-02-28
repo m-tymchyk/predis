@@ -493,7 +493,17 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
      */
     protected function onMovedResponse(CommandInterface $command, $details)
     {
-        $this->handleMoveException($details);
+        list($slot, $connectionID) = explode(' ', $details, 2);
+
+        if (!$connection = $this->getConnectionById($connectionID)) {
+            $connection = $this->createConnection($connectionID);
+        }
+
+        if ($this->useClusterSlots) {
+            $this->askSlotMap($connection);
+        }
+
+        $this->move($connection, $slot);
         $response = $this->executeCommand($command);
 
         return $response;
@@ -699,23 +709,5 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
     public function useClusterSlots($value)
     {
         $this->useClusterSlots = (bool)$value;
-    }
-
-    /**
-     * @param $details
-     */
-    public function handleMoveException($details)
-    {
-        list($slot, $connectionID) = explode(' ', $details, 2);
-
-        if (!$connection = $this->getConnectionById($connectionID)) {
-            $connection = $this->createConnection($connectionID);
-        }
-
-        if ($this->useClusterSlots) {
-            $this->askSlotMap($connection);
-        }
-
-        $this->move($connection, $slot);
     }
 }
