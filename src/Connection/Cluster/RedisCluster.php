@@ -462,32 +462,24 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
      * Handles -ERR responses returned by Redis.
      *
      * @param CommandInterface $command Command that generated the -ERR response.
-     * @param ErrorResponseInterface $error  Redis error response object.
-     * @param ErrorResponseInterface $error  Redis error response object.
-     * @param string                 $method
+     * @param ErrorResponseInterface $error Redis error response object.
      *
      * @return mixed
      */
-    protected function onErrorResponse(CommandInterface $command, ErrorResponseInterface $error, $method)
+    protected function onErrorResponse(CommandInterface $command, ErrorResponseInterface $error)
     {
         $details = explode(' ', $error->getMessage(), 2);
 
         switch ($details[0]) {
             case 'MOVED':
-                $this->onMovedResponse($command, $details[1]);
-                break;
+                return $this->onMovedResponse($command, $details[1]);
 
             case 'ASK':
-                $this->onAskResponse($command, $details[1]);
-                break;
+                return $this->onAskResponse($command, $details[1]);
 
             default:
                 return $error;
         }
-
-        $response = $this->$method($command);
-
-        return $response;
     }
 
     /**
@@ -496,20 +488,15 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
      *
      * @param CommandInterface $command Command that generated the -MOVED response.
      * @param string $details Parameters of the -MOVED response.
+     *
+     * @return mixed
      */
     protected function onMovedResponse(CommandInterface $command, $details)
     {
-        list($slot, $connectionID) = explode(' ', $details, 2);
+        $this->handleMoveException($details);
+        $response = $this->executeCommand($command);
 
-        if (!$connection = $this->getConnectionById($connectionID)) {
-            $connection = $this->createConnection($connectionID);
-        }
-
-        if ($this->useClusterSlots) {
-            $this->askSlotMap($connection);
-        }
-
-        $this->move($connection, $slot);
+        return $response;
     }
 
     /**
@@ -518,6 +505,8 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
      *
      * @param CommandInterface $command Command that generated the -ASK response.
      * @param string $details Parameters of the -ASK response.
+     *
+     * @return mixed
      */
     protected function onAskResponse(CommandInterface $command, $details)
     {
@@ -528,6 +517,9 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
         }
 
         $connection->executeCommand(RawCommand::create('ASKING'));
+        $response = $connection->executeCommand($command);
+
+        return $response;
     }
 
     /**
@@ -612,13 +604,7 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
      */
     public function readResponse(CommandInterface $command)
     {
-        $response = $this->retryCommandOnFailure($command, __FUNCTION__);
-
-        if ($response instanceof ErrorResponseInterface) {
-            return $this->onErrorResponse($command, $response, __FUNCTION__);
-        }
-
-        return $response;
+        return $this->retryCommandOnFailure($command, __FUNCTION__);
     }
 
     /**
@@ -629,7 +615,7 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
         $response = $this->retryCommandOnFailure($command, __FUNCTION__);
 
         if ($response instanceof ErrorResponseInterface) {
-            return $this->onErrorResponse($command, $response, __FUNCTION__);
+            return $this->onErrorResponse($command, $response);
         }
 
         return $response;
@@ -713,5 +699,23 @@ class RedisCluster implements ClusterInterface, \IteratorAggregate, \Countable
     public function useClusterSlots($value)
     {
         $this->useClusterSlots = (bool)$value;
+    }
+
+    /**
+     * @param $details
+     */
+    public function handleMoveException($details)
+    {
+        list($slot, $connectionID) = explode(' ', $details, 2);
+
+        if (!$connection = $this->getConnectionById($connectionID)) {
+            $connection = $this->createConnection($connectionID);
+        }
+
+        if ($this->useClusterSlots) {
+            $this->askSlotMap($connection);
+        }
+
+        $this->move($connection, $slot);
     }
 }

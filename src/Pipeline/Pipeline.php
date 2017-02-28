@@ -15,6 +15,7 @@ use Predis\ClientContextInterface;
 use Predis\ClientException;
 use Predis\ClientInterface;
 use Predis\Command\CommandInterface;
+use Predis\Connection\Cluster\RedisCluster;
 use Predis\Connection\ConnectionInterface;
 use Predis\Connection\Replication\ReplicationInterface;
 use Predis\Response\ErrorInterface as ErrorResponseInterface;
@@ -158,11 +159,37 @@ class Pipeline implements ClientContextInterface
      * @param bool $send Specifies if the commands in the buffer should be sent to Redis.
      *
      * @return $this
+     *
+     * @throws ServerException
      */
     public function flushPipeline($send = true)
     {
         if ($send && !$this->pipeline->isEmpty()) {
-            $responses = $this->executePipeline($this->getConnection(), $this->pipeline);
+            $pipelineClone = clone $this->pipeline;
+            $connection = $this->getConnection();
+
+            try {
+                $responses = $this->executePipeline($connection, $this->pipeline);
+            }
+            catch (ServerException $exception)
+            {
+                $details = explode(' ', $exception->getMessage(), 2);
+
+                switch ($details[0]) {
+                    case "MOVED":
+                        if ($connection instanceof RedisCluster)
+                        {
+                            $this->pipeline = $pipelineClone;
+                            $connection->handleMoveException($details[1]);
+                            $responses = $this->executePipeline($connection, $this->pipeline);
+                            break;
+                        }
+                    default:
+                        throw $exception;
+                }
+            }
+
+
             $this->responses = array_merge($this->responses, $responses);
         } else {
             $this->pipeline = new \SplQueue();
