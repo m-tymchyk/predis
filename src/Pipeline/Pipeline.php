@@ -15,6 +15,7 @@ use Predis\ClientContextInterface;
 use Predis\ClientException;
 use Predis\ClientInterface;
 use Predis\Command\CommandInterface;
+use Predis\Connection\Cluster\ClusterInterface;
 use Predis\Connection\Cluster\RedisCluster;
 use Predis\Connection\ConnectionInterface;
 use Predis\Connection\Replication\ReplicationInterface;
@@ -130,26 +131,33 @@ class Pipeline implements ClientContextInterface
      */
     protected function executePipeline(ConnectionInterface $connection, \SplQueue $commands)
     {
-        foreach ($commands as $command) {
-            $connection->writeRequest($command);
-        }
-
         $responses = array();
-        $exceptions = $this->throwServerExceptions();
 
-        while (!$commands->isEmpty()) {
-            $command = $commands->dequeue();
-            $response = $connection->readResponse($command);
+        if ($connection instanceof ClusterInterface) {
+            while (!$commands->isEmpty()) {
+                $command = $commands->dequeue();
+                $responses[] = $connection->executeCommand($command);
+            }
+        } else {
+            foreach ($commands as $command) {
+                $connection->writeRequest($command);
+            }
 
-            if (!$response instanceof ResponseInterface) {
-                $responses[] = $command->parseResponse($response);
-            } elseif ($response instanceof ErrorResponseInterface && $exceptions) {
-                $this->exception($connection, $response);
-            } else {
-                $responses[] = $response;
+            $exceptions = $this->throwServerExceptions();
+
+            while (!$commands->isEmpty()) {
+                $command = $commands->dequeue();
+                $response = $connection->readResponse($command);
+
+                if (!$response instanceof ResponseInterface) {
+                    $responses[] = $command->parseResponse($response);
+                } elseif ($response instanceof ErrorResponseInterface && $exceptions) {
+                    $this->exception($connection, $response);
+                } else {
+                    $responses[] = $response;
+                }
             }
         }
-
         return $responses;
     }
 
@@ -165,31 +173,7 @@ class Pipeline implements ClientContextInterface
     public function flushPipeline($send = true)
     {
         if ($send && !$this->pipeline->isEmpty()) {
-            $pipelineClone = clone $this->pipeline;
-            $connection = $this->getConnection();
-
-            try {
-                $responses = $this->executePipeline($connection, $this->pipeline);
-            }
-            catch (ServerException $exception)
-            {
-                $details = explode(' ', $exception->getMessage(), 2);
-
-                switch ($details[0]) {
-                    case "MOVED":
-                        if ($connection instanceof RedisCluster)
-                        {
-                            $this->pipeline = $pipelineClone;
-                            $connection->handleMoveException($details[1]);
-                            $responses = $this->executePipeline($connection, $this->pipeline);
-                            break;
-                        }
-                    default:
-                        throw $exception;
-                }
-            }
-
-
+            $responses = $this->executePipeline($this->getConnection(), $this->pipeline);
             $this->responses = array_merge($this->responses, $responses);
         } else {
             $this->pipeline = new \SplQueue();
