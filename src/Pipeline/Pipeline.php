@@ -16,7 +16,6 @@ use Predis\ClientException;
 use Predis\ClientInterface;
 use Predis\Command\CommandInterface;
 use Predis\Connection\Cluster\ClusterInterface;
-use Predis\Connection\Cluster\RedisCluster;
 use Predis\Connection\ConnectionInterface;
 use Predis\Connection\Replication\ReplicationInterface;
 use Predis\Response\ErrorInterface as ErrorResponseInterface;
